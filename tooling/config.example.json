@@ -1,0 +1,19 @@
+{
+  "site_url": "https://radovanlamac.com",
+  "output_dir": "dist",
+  "preferred_homepage": "radovan-lamac.html",
+  "download_images": true,
+  "image_dir": "images",
+  "image_variants": [
+    480,
+    800,
+    1200,
+    1600,
+    2000
+  ],
+  "image_format": "webp",
+  "quality": 82,
+  "format_html": true,
+  "format_css_js": true,
+  "create_sitemap": true
+}
