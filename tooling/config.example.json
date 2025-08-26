@@ -15,5 +15,6 @@
   "quality": 82,
   "format_html": true,
   "format_css_js": true,
-  "create_sitemap": true
+  "create_sitemap": true,
+  "reuse_cache": true
 }

@@ -134,36 +134,116 @@ def make_variants(img_path, out_dir, widths, fmt="webp", quality=82):
     variants.sort(key=lambda t: t[0]); return variants
 
 def rewrite_img_tags(file_path, cfg, dist_root):
-    with open(file_path, "r", encoding="utf-8", errors="ignore") as f: html = f.read()
+    import json, os
+    from bs4 import BeautifulSoup
+
+    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+        html = f.read()
     soup = BeautifulSoup(html, "lxml")
+
     changed = False
     img_dir = os.path.join(dist_root, cfg["image_dir"])
     orig_dir = os.path.join(img_dir, "original")
-    var_dir = os.path.join(img_dir, "responsive")
+    var_dir  = os.path.join(img_dir, "responsive")
+    cache_path = os.path.join(img_dir, "_cache.json")
+
+    # Load cache: maps original URL -> { "src": "/images/responsive/..", "sizes": "...", "variants": [{"w":1200,"path":"/images/responsive/..."}] }
+    cache = {}
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, "r", encoding="utf-8") as cf:
+                cache = json.load(cf)
+        except Exception:
+            cache = {}
+
+    def variants_exist(entry):
+        # ensure all referenced files exist on disk
+        paths = [entry.get("src", "")]
+        paths += [v.get("path", "") for v in entry.get("variants", [])]
+        for p in paths:
+            if not p:
+                return False
+            local = os.path.join(dist_root, p.lstrip("/"))
+            if not os.path.exists(local):
+                return False
+        return True
 
     for img in soup.find_all("img"):
         src = img.get("src")
-        if not src: continue
-        if not cfg.get("download_images", True): continue
-        if src.startswith("//"): src = "https:" + src
-        if not (src.startswith("http://") or src.startswith("https://")): continue
+        if not src:
+            continue
+
+        # normalize protocol-relative
+        if src.startswith("//"):
+            src = "https:" + src
+
+        # Only handle external images when download_images is True
+        if not cfg.get("download_images", True):
+            continue
+        if not (src.startswith("http://") or src.startswith("https://")):
+            # already local; leave it
+            continue
+
+        # FAST PATH: reuse from cache if available and files still exist
+        if cfg.get("reuse_cache", True) and src in cache and variants_exist(cache[src]):
+            entry = cache[src]
+            img["src"] = entry["src"]
+            img["srcset"] = ", ".join(f'{v["path"]} {v["w"]}w' for v in entry.get("variants", []))
+            if not img.get("sizes"):
+                img["sizes"] = entry.get("sizes", "(max-width: 1200px) 100vw, 1200px")
+            changed = True
+            continue
+
+        # Otherwise: download and generate as before
         downloaded = download_image(src, orig_dir)
-        if not downloaded: continue
-        variants = make_variants(downloaded, var_dir, cfg["image_variants"], cfg["image_format"], cfg["quality"])
-        if not variants: continue
-        mid = variants[min(len(variants)//2, len(variants)-1)][1]
+        if not downloaded:
+            continue
+
+        variants = make_variants(
+            downloaded,
+            var_dir,
+            cfg["image_variants"],
+            cfg["image_format"],
+            cfg["quality"]
+        )
+        if not variants:
+            continue
+
+        # Choose mid-size as default src
+        mid_idx = min(len(variants)//2, len(variants)-1)
+        mid_path = variants[mid_idx][1]
         srcset_parts = []
+        variant_entries = []
         for w, p in variants:
             rel = os.path.relpath(p, dist_root).replace(os.sep, "/")
             srcset_parts.append(f"/{rel} {w}w")
-        img["src"] = "/" + os.path.relpath(mid, dist_root).replace(os.sep, "/")
+            variant_entries.append({"w": w, "path": f"/{rel}"})
+
+        local_src = "/" + os.path.relpath(mid_path, dist_root).replace(os.sep, "/")
+        img["src"] = local_src
         img["srcset"] = ", ".join(srcset_parts)
         if not img.get("sizes"):
             img["sizes"] = "(max-width: 1200px) 100vw, 1200px"
         changed = True
 
+        # Update cache
+        cache[src] = {
+            "src": local_src,
+            "sizes": img.get("sizes"),
+            "variants": variant_entries
+        }
+
     if changed:
-        with open(file_path, "w", encoding="utf-8") as f: f.write(soup.prettify())
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(soup.prettify())
+        # persist cache to disk
+        try:
+            os.makedirs(img_dir, exist_ok=True)
+            with open(cache_path, "w", encoding="utf-8") as cf:
+                json.dump(cache, cf, indent=2)
+        except Exception:
+            pass
+
 
 def ensure_index(dist_root, preferred=""):
     index_path = os.path.join(dist_root, "index.html")
